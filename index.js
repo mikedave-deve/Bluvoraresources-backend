@@ -19,29 +19,36 @@ const app = express()
 app.set('trust proxy', 1)
 
 // ══════════════════════════════════════════════════════════════
-//  CORS
+//  Fix double-slash URLs (e.g. //api/resume → /api/resume)
+//  Root cause: VITE_API_URL set with a trailing slash, which
+//  when joined with /api/resume produces //api/resume.
+//  A 308 redirect loses CORS headers — we fix it with 307
+//  (preserves POST method) before CORS even runs.
 // ══════════════════════════════════════════════════════════════
-const ALLOWED_ORIGINS = [
-  process.env.FRONTEND_ORIGIN,
-  'http://localhost:5173',   // Vite dev server
-  'http://localhost:3000',
-  'https://bluvoraresources.com'
-].filter(Boolean)
+app.use((req, res, next) => {
+  if (req.path.startsWith('//')) {
+    const clean = req.path.replace(/^\/+/, '/')
+    const qs    = req.url.includes('?') ? '?' + req.url.split('?').slice(1).join('?') : ''
+    return res.redirect(307, clean + qs)
+  }
+  next()
+})
 
-app.use(cors({
-  origin: (origin, cb) => {
-    // Allow non-browser tools (Postman, curl) and server-side calls
-    if (!origin) return cb(null, true)
-    if (ALLOWED_ORIGINS.some(o => origin.startsWith(o))) return cb(null, true)
-    cb(new Error(`CORS: Origin ${origin} is not allowed`))
-  },
-  methods:          ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders:   ['Content-Type', 'Authorization'],
-  credentials:      true,
+// ══════════════════════════════════════════════════════════════
+//  CORS — reflect all origins so Vercel preview deploys work.
+//  Security is enforced via SMTP credentials + rate limiting.
+// ══════════════════════════════════════════════════════════════
+const corsOptions = {
+  origin:               true,   // reflect request origin back
+  methods:              ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders:       ['Content-Type', 'Authorization'],
+  credentials:          true,
   optionsSuccessStatus: 200,
-}))
+}
 
-app.options('*', cors()) // pre-flight
+// Pre-flight must be registered BEFORE any other middleware
+app.options('*', cors(corsOptions))
+app.use(cors(corsOptions))
 
 // ══════════════════════════════════════════════════════════════
 //  Body parsing (JSON for contact, multipart handled by multer)
@@ -52,28 +59,20 @@ app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 // ══════════════════════════════════════════════════════════════
 //  Rate limiting
 // ══════════════════════════════════════════════════════════════
-// Global: 100 req / 15 min per IP
 const globalLimiter = rateLimit({
   windowMs:         15 * 60 * 1000,
   max:              100,
   standardHeaders:  true,
   legacyHeaders:    false,
-  message: {
-    success: false,
-    message: 'Too many requests. Please wait a few minutes and try again.',
-  },
+  message: { success: false, message: 'Too many requests. Please wait a few minutes and try again.' },
 })
 
-// Form-specific: 5 submissions / 15 min per IP (anti-spam)
 const formLimiter = rateLimit({
   windowMs:         15 * 60 * 1000,
   max:              5,
   standardHeaders:  true,
   legacyHeaders:    false,
-  message: {
-    success: false,
-    message: 'You have submitted too many forms recently. Please wait 15 minutes before trying again.',
-  },
+  message: { success: false, message: 'Too many submissions. Please wait 15 minutes before trying again.' },
 })
 
 app.use(globalLimiter)
@@ -88,27 +87,12 @@ app.get('/api/health', (_req, res) => {
 // ══════════════════════════════════════════════════════════════
 //  POST /api/contact
 // ══════════════════════════════════════════════════════════════
-app.post(
-  '/api/contact',
-  formLimiter,
-  sanitizeBody,
-  contactRoute.validate,
-  contactRoute.handler
-)
+app.post('/api/contact', formLimiter, sanitizeBody, contactRoute.validate, contactRoute.handler)
 
 // ══════════════════════════════════════════════════════════════
 //  POST /api/resume
-//  multer runs first (parses multipart + validates file),
-//  then sanitize + express-validator, then the handler.
 // ══════════════════════════════════════════════════════════════
-app.post(
-  '/api/resume',
-  formLimiter,
-  handleUpload('resume'),   // populates req.file and req.body
-  sanitizeBody,
-  resumeRoute.validate,
-  resumeRoute.handler
-)
+app.post('/api/resume', formLimiter, handleUpload('resume'), sanitizeBody, resumeRoute.validate, resumeRoute.handler)
 
 // ══════════════════════════════════════════════════════════════
 //  404
@@ -123,17 +107,7 @@ app.use((_req, res) => {
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error('[global error]', err)
-
-  // CORS errors
-  if (err.message?.startsWith('CORS:')) {
-    return res.status(403).json({ success: false, message: err.message })
-  }
-
-  // Generic 500
-  res.status(500).json({
-    success: false,
-    message: 'An unexpected server error occurred. Please try again.',
-  })
+  res.status(500).json({ success: false, message: 'An unexpected server error occurred. Please try again.' })
 })
 
 // ══════════════════════════════════════════════════════════════
@@ -148,5 +122,4 @@ app.listen(PORT, async () => {
   await verifyConnection()
 })
 
-// Export for Vercel serverless
 module.exports = app
