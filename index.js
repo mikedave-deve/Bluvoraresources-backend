@@ -12,6 +12,7 @@ const { sanitizeBody }         = require('./middleware/sanitize')
 const { handleUpload }         = require('./middleware/upload')
 const contactRoute             = require('./api/contact')
 const resumeRoute              = require('./api/resume')
+const applyRoute               = require('./api/apply')
 
 const app = express()
 
@@ -93,6 +94,11 @@ app.post('/api/contact', formLimiter, sanitizeBody, contactRoute.validate, conta
 //  POST /api/resume
 // ══════════════════════════════════════════════════════════════
 app.post('/api/resume', formLimiter, handleUpload('resume'), sanitizeBody, resumeRoute.validate, resumeRoute.handler)
+
+// ══════════════════════════════════════════════════════════════
+//  POST /api/apply
+// ══════════════════════════════════════════════════════════════
+app.post('/api/apply', formLimiter, sanitizeBody, applyRoute.validate, applyRoute.handler)
 
 // ══════════════════════════════════════════════════════════════
 //  404
